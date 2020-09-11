@@ -2,10 +2,11 @@ import json
 import argparse
 import time
 from datetime import datetime
-from tqdm import tqdm
+#from tqdm import tqdm
 from scipy.stats import bernoulli
 import numpy as np
 import random
+import matplotlib.pyplot as plt
 
 """ 
     DESCRIPTION: 
@@ -36,8 +37,10 @@ class network:
 
     def update(self,S,iterations=10):
         S = S[0,:]
-
         h = np.zeros(shape=(self.N))
+        d = {}
+        for mu in range(self.M):
+            d[mu] = []
         for t in range(iterations):
             S_old = S.copy()
             for i in range(self.N):
@@ -49,11 +52,12 @@ class network:
                     S[i]=1
                 else :
                     S[i]=-1
-
+            for mu in range(self.M):
+                d[mu].append(hamming_distance(self.x[mu,:],S))
             if (S==S_old).all():
                 print('converged at t = {}'.format(t))
                 break
-        return S
+        return S,d
 
 def read_multijson(INPUT):
     seq = []
@@ -71,6 +75,25 @@ def random_sequence(N,M):
     for _ in range(M):
         seq.append([x if x==1 else -1 for x in bernoulli.rvs(p=0.5, size=N)])
     return np.array(seq)
+
+def hamming_distance(x,y):
+    return np.abs(np.sum(x-y))
+
+def best_pattern(d):
+    last_d = []
+    for mu in range(len(d.keys())):
+        last_d.append(d[mu][-1])
+    return np.argwhere(last_d == np.amin(last_d))
+
+def plot_hamming(d):
+    for mu in range(len(d.keys())):
+        plt.plot(d[mu],label=str(mu))
+    plt.title('Hopfield T={}'.format(0))
+    plt.xlabel('time')
+    plt.ylabel('hamming distance')
+    plt.legend()
+    plt.show()
+
 
 #### MAIN
 print("="*50)
@@ -92,6 +115,7 @@ TEST_IN       = args.test_seq
 N             = int(args.N)
 M             = int(args.M) 
 israndom      = args.random 
+distances     = {}
 np.random.seed(seed=1)
 
 
@@ -113,9 +137,14 @@ if S.shape[1]!=x.shape[1]:
 print(x)
 print('INPUT SEQ : {}'.format(S))
 net = network(x)
-S_updated = net.update(S=S)
+S_updated,distances = net.update(S=S)
 print('OUTPUT SEQ: {}'.format(S_updated))
+best = best_pattern(d=distances)
+print(best[:,0])
+for b in best[:,0]:
+    print('closest patterns {} with distance {}'.format(b,distances[b][-1]))
 
+plot_hamming(d=distances)
 print("="*50)
 tot_time = time.time() - start_time
 now = datetime.now()
