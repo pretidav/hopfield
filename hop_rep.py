@@ -13,7 +13,7 @@ from tensorflow import keras
     DESCRIPTION: 
         Basic Hopfield network model 
     USAGE: 
-        python -u hop.py --input_seqs=intputfile.json --test_seq=testseq.json --random --N=100 --M=10 
+        python -u hop_rep.py --input_seqs=intputfile.json --test_seq=testseq.json --random --N=100 --M=10 
         if --random, input is ignored and M seq of length N are randomly generated and stored.
         inputfile must be a multijson file with 1 seq for each line. 
         testseq is a json with a sequence to be tested. 
@@ -54,7 +54,7 @@ class network:
         E.append(energy(S))
         for mu in range(self.M):
             d[mu] = []
-        for _ in tqdm(range(iterations)):
+        for _ in range(iterations):
             n = random.randint(0,self.N-1)
             h[n] = 0
             for j in range(self.N):
@@ -67,22 +67,6 @@ class network:
             for mu in range(self.M):
                 d[mu].append(hamming_distance(self.x[mu,:],S))
         return S,d,E
-
-def read_multijson(INPUT):
-    seq = []
-    total = 0
-    with open(INPUT,'r',encoding='utf8') as file:
-        for line in file:
-            total += 1
-            line = line.strip()
-            ss = json.loads(line)
-            seq.append(ss['seq'])
-    return np.array(seq)
-
-#def create_mnist():
-#    mnist = keras.datasets.mnist
-#    _, (test_images, test_labels) = mnist.load_data()
-
 
 def random_sequence(N,M):
     seq = []
@@ -106,6 +90,12 @@ def plot_energy(e,temp):
     plt.ylabel('E(t)')
     plt.show()
 
+def plot_m(m,temp):
+    plt.scatter(temp,m)
+    plt.xlabel('T')
+    plt.ylabel('m(T)')
+    plt.show()
+
 def plot_hamming(d,temp):
     for mu in range(len(d.keys())):
         plt.plot(d[mu],label=str(mu))
@@ -124,47 +114,42 @@ print(" --- STARTED : {} ---".format(now))
 print("="*50)
 
 parser = argparse.ArgumentParser()
-parser.add_argument("--input_seq", help = "multijson with sequences to be stored")
-parser.add_argument("--test_seq", help = "json with sequence to be tested")
 parser.add_argument("--N", help = "pattern length (if --random)")
 parser.add_argument("--M", help = "number of different patterns (if --random)")
 parser.add_argument("--iter", help = "number of iterations")
-parser.add_argument("--random", help = "ignore input and create random patterns", action="store_true")
 parser.add_argument("--plot",help = "plot or not", action="store_true")
-parser.add_argument("--temp",help='temperature')
+parser.add_argument("--replicas",help='number of replicas')
+
 args = parser.parse_args()
-PATH_IN       = args.input_seq
-TEST_IN       = args.test_seq
 ITERATIONS    = int(args.iter)
 N             = int(args.N)
 M             = int(args.M) 
-T             = float(args.temp)
-israndom      = args.random 
 isplot        = args.plot
+replicas      = int(args.replicas)
 distances     = {}
 np.random.seed(seed=1)
 
+x = random_sequence(N=N,M=M)
+m_T = []
+for T in tqdm(np.arange(0,2,0.1)):
+    S_average = np.zeros(shape=(N))
+    m = []
+    for n in range(replicas):
+        S = random_sequence(N=N,M=1)
+        if S.shape[1]!=x.shape[1]:
+            print('error')
+            exit(1)
+            
+        net = network(x,temp=T)
+        S_updated,distances,energy = net.update(S=S,iterations=ITERATIONS)
+        S_average += S_updated
+    for mu in range(M):
+        tmp = 0 
+        for i in range(N):
+            tmp += S_average[i]*x[mu,i]
+        m.append(tmp) 
+    m_T.append(np.min(m)/replicas/N)
 
-if israndom:
-    x = random_sequence(N=N,M=M)
-    S = random_sequence(N=N,M=1)
-    print('Storing {} random patterns of length {}'.format(M,N))
-    print('Generating test sequence')
-else :
-    x = read_multijson(INPUT=PATH_IN)
-    S = read_multijson(INPUT=TEST_IN)
-    print('Storing {} patterns {} of length from {}'.format(len(x),len(x[0]),PATH_IN))
-    print('Test seq from {}'.format(TEST_IN))
-
-if S.shape[1]!=x.shape[1]:
-    print('error')
-    exit(1)
-    
-net = network(x,temp=T)
-S_updated,distances,energy = net.update(S=S,iterations=ITERATIONS)
-best = best_pattern(d=distances)
-for b in best[:,0]:
-    print('closest patterns {} with normed distance {}'.format(b,distances[b][-1]))
 
 print("="*50)
 tot_time = time.time() - start_time
@@ -173,5 +158,5 @@ print (' --- DONE    : total time: {} sec ---'.format(tot_time))
 print("="*50)
 
 if isplot:
-    plot_hamming(d=distances,temp=T)
-    plot_energy(e=energy,temp=T)
+    plot_m(m_T,np.arange(0,2,0.1))
+    
