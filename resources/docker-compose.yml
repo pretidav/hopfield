@@ -1,0 +1,13 @@
+version: "2"
+  hopfield:
+     build:
+       context: ./code
+     container_name: hopfield-container
+     hostname: hopfield-container 
+     environment:
+       - pattern_length=$pattern_length
+       - number_patterns=$number_patterns
+       - number_replicas=$number_replicas
+       - number_iterations=$number_iterations
+       - plot=$plot
+
