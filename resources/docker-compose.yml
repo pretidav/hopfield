@@ -1,7 +1,7 @@
 version: "2"
   hopfield:
      build:
-       context: ./code
+       context: ./src
      container_name: hopfield-container
      hostname: hopfield-container 
      environment:
