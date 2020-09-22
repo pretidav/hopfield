@@ -7,7 +7,6 @@ from scipy.stats import bernoulli
 import numpy as np
 import random
 import matplotlib.pyplot as plt
-from tensorflow import keras
 
 """ 
     DESCRIPTION: 
