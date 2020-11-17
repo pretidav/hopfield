@@ -11,4 +11,5 @@ services:
        - number_replicas=$number_replicas
        - number_iterations=$number_iterations
        - plot=$plot
+       - processes=$processes
 

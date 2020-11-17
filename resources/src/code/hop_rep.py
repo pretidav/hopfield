@@ -7,12 +7,13 @@ from scipy.stats import bernoulli
 import numpy as np
 import random
 import matplotlib.pyplot as plt
+from multiprocessing import Pool
 
 """ 
     DESCRIPTION: 
         Basic Hopfield network model 
     USAGE: 
-        python -u hop_rep.py --input_seqs=intputfile.json --test_seq=testseq.json --random --N=100 --M=10 
+        python -u hop_rep.py --input_seqs=intputfile.json --test_seq=testseq.json --random --N=100 --M=10  --plot --threads=4
         if --random, input is ignored and M seq of length N are randomly generated and stored.
         inputfile must be a multijson file with 1 seq for each line. 
         testseq is a json with a sequence to be tested. 
@@ -61,7 +62,7 @@ class network:
                 if self.T==0:
                     S = np.where(h<=0, -1, 1)
                 else :
-                    S = np.where([random.random() for _ in range(self.N)] <= 0.5*(1.0+np.tanh(h/T)), 1 , -1)
+                    S = np.where([random.random() for _ in range(self.N)] <= 0.5*(1.0+np.tanh(h/self.T)), 1 , -1)
             E.append(energy(S))
             for mu in range(self.M):
                 d[mu].append(hamming_distance(self.x[mu,:],S))
@@ -118,6 +119,7 @@ parser.add_argument("--M", help = "number of different patterns (if --random)")
 parser.add_argument("--iter", help = "number of iterations")
 parser.add_argument("--plot",help = "plot or not", action="store_true")
 parser.add_argument("--replicas",help='number of replicas')
+parser.add_argument("--threads", help='number of parallel threads')
 
 args = parser.parse_args()
 ITERATIONS    = int(args.iter)
@@ -125,12 +127,15 @@ N             = int(args.N)
 M             = int(args.M) 
 isplot        = args.plot
 replicas      = int(args.replicas)
+threads       = int(args.threads)
 distances     = {}
 np.random.seed(seed=1)
 
+
 x = random_sequence(N=N,M=M)
 m_T = []
-for T in tqdm(np.arange(0,2,0.1)):
+
+def func(T,N=N,M=M,replicas=replicas,x=x):        
     S_average = np.zeros(shape=(N))
     m = []
     for n in range(replicas):
@@ -147,9 +152,11 @@ for T in tqdm(np.arange(0,2,0.1)):
         for i in range(N):
             tmp += S_average[i]*x[mu,i]
         m.append(tmp) 
-    m_T.append(np.min(m)/replicas/N)
+    return np.min(m)
 
-
+with Pool(threads) as p:
+    m_T=list(tqdm(p.imap(func, list(np.arange(0,0.1,0.01))),total=len(list(np.arange(0,0.1,0.01)))))
+m_T = [x/replicas/N for x in m_T]
 print("="*50)
 tot_time = time.time() - start_time
 now = datetime.now()
@@ -157,5 +164,5 @@ print (' --- DONE    : total time: {} sec ---'.format(tot_time))
 print("="*50)
 
 if isplot:
-    plot_m(m_T,np.arange(0,2,0.1))
+    plot_m(m_T,np.arange(0,0.1,0.01))
     
