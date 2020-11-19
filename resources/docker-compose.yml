@@ -12,4 +12,7 @@ services:
        - number_iterations=$number_iterations
        - plot=$plot
        - processes=$processes
+       - Tmin=$Tmin
+       - Tmax=$Tmax
+       - Tby=$Tby
 

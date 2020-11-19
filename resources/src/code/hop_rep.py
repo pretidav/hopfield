@@ -84,14 +84,15 @@ def best_pattern(d):
     return np.argwhere(last_d == np.amin(last_d))
 
 def plot_energy(e,temp):
-    plt.plot(e)
-    plt.title('Hopfiled T={}'.format(temp))
+    for i in range(len(e)):
+        plt.plot(e[i],label="T={}".format(temp[i]))
+    plt.title('Hopfield Energy')
     plt.xlabel('t')
     plt.ylabel('E(t)')
     plt.show()
 
 def plot_m(m,temp):
-    plt.scatter(temp,m)
+    plt.scatter(x=temp,y=m)
     plt.xlabel('T')
     plt.ylabel('m(T)')
     plt.show()
@@ -120,6 +121,9 @@ parser.add_argument("--iter", help = "number of iterations")
 parser.add_argument("--plot",help = "plot or not", action="store_true")
 parser.add_argument("--replicas",help='number of replicas')
 parser.add_argument("--threads", help='number of parallel threads')
+parser.add_argument("--Tmin",help='minimum T')
+parser.add_argument("--Tmax",help='maximum T')
+parser.add_argument("--Tby",help='steps T')
 
 args = parser.parse_args()
 ITERATIONS    = int(args.iter)
@@ -128,13 +132,17 @@ M             = int(args.M)
 isplot        = args.plot
 replicas      = int(args.replicas)
 threads       = int(args.threads)
+Tmin          = float(args.Tmin)
+Tmax          = float(args.Tmax)
+Tby           = float(args.Tby)
 distances     = {}
-np.random.seed(seed=1)
+#np.random.seed(seed=1)
 
 
 x = random_sequence(N=N,M=M)
 m_T = []
-
+e_T = []
+d_T = []
 def func(T,N=N,M=M,replicas=replicas,x=x):        
     S_average = np.zeros(shape=(N))
     m = []
@@ -146,23 +154,29 @@ def func(T,N=N,M=M,replicas=replicas,x=x):
             
         net = network(x,temp=T)
         S_updated,distances,energy = net.update(S=S,iterations=ITERATIONS)
+
         S_average += S_updated
     for mu in range(M):
         tmp = 0 
         for i in range(N):
-            tmp += S_average[i]*x[mu,i]
-        m.append(tmp) 
-    return np.min(m)
+            tmp += S_average[i]*x[mu,i]/replicas
+        m.append(tmp)
+    return m[0],distances,energy
 
 with Pool(threads) as p:
-    m_T=list(tqdm(p.imap(func, list(np.arange(0,0.1,0.01))),total=len(list(np.arange(0,0.1,0.01)))))
-m_T = [x/replicas/N for x in m_T]
+    A=list(tqdm(p.imap(func, list(np.arange(Tmin,Tmax,Tby))),total=len(list(np.arange(Tmin,Tmax,Tby)))))
+
+for (m,d,e) in A:
+    m_T.append(m)
+    d_T.append(d)
+    e_T.append(e)
+
+m_T = [np.abs(xx)/N for xx in m_T]
 print("="*50)
 tot_time = time.time() - start_time
 now = datetime.now()
 print (' --- DONE    : total time: {} sec ---'.format(tot_time))
 print("="*50)
-
 if isplot:
-    plot_m(m_T,np.arange(0,0.1,0.01))
-    
+    plot_m(m=m_T,temp=np.arange(Tmin,Tmax,Tby))
+    #plot_energy(e=e_T,temp=np.arange(Tmin,Tmax,Tby))    
