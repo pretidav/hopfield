@@ -1,0 +1,5 @@
+numpy
+matplotlib
+tqdm
+pytest
+# the figures use the plot_style package of this author: pip install -e ../plot_style
