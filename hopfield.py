@@ -15,6 +15,8 @@ docs/hopfield_mean_field.pdf (Orhan, after Hertz, Krogh & Palmer) and in Gerstne
 AUTHOR: David Preti, Rome, Oct 2022.
 """
 import argparse
+import json
+import math
 import os
 import time
 from multiprocessing import Pool
@@ -74,6 +76,16 @@ class HopfieldNetwork:
         for j in rng.permutation(self.N):
             self.update_unit(s, j, rng)
         return s
+
+    def relax(self, s0, max_sweeps, rng):
+        """T = 0: sweep until a sweep flips no unit (a fixed point) or max_sweeps. Returns the state and the sweeps."""
+        s = np.array(s0, dtype=float)
+        for k in range(1, max_sweeps + 1):
+            before = s.copy()
+            self.sweep(s, rng)
+            if np.array_equal(s, before):
+                return s, k
+        return s, max_sweeps
 
     def run(self, s0, sweeps, rng):
         """Run from s0. Returns the final state, the energy per unit (sweeps + 1,) and the overlaps (sweeps + 1, M)."""
@@ -142,7 +154,7 @@ def temperature_scan(x, temps, replicas, sweeps, start, noise, threads, seed):
 
 
 def run_capacity(task):
-    """Overlap at T = 0 after `sweeps` sweeps, starting from pattern 0, for P = alpha N random patterns."""
+    """Overlap at T = 0, starting from pattern 0, for P = alpha N random patterns, after at most `sweeps` sweeps."""
     N, alpha, replicas, sweeps, seed = task
     rng = np.random.default_rng(seed)
     P = max(1, int(round(alpha * N)))
@@ -150,9 +162,9 @@ def run_capacity(task):
     for _ in range(replicas):
         x = random_patterns(N, P, rng)
         net = HopfieldNetwork(x, temp=0.0)
-        s, _, ms = net.run(x[0], sweeps, rng)
-        out.append(ms[-1][0])
-    return {"alpha": alpha, "P": P, "m": np.array(out)}
+        s, _ = net.relax(x[0], sweeps, rng)
+        out.append(float(net.overlaps(s)[0]))
+    return {"N": N, "alpha": alpha, "P": P, "m": np.array(out)}
 
 
 def capacity_scan(N, alphas, replicas, sweeps, threads, seed):
@@ -162,6 +174,87 @@ def capacity_scan(N, alphas, replicas, sweeps, threads, seed):
         with Pool(threads) as pool:
             return list(tqdm(pool.imap(run_capacity, tasks), total=len(tasks)))
     return [run_capacity(t) for t in tqdm(tasks)]
+
+
+def _g(y, alpha):
+    """Equation 64 of the PDF: the retrieval states at T = 0 are the roots y > 0 of g, with m = erf(y)."""
+    return y * (np.sqrt(2 * alpha) + 2 / np.sqrt(np.pi) * np.exp(-y * y)) - np.array([math.erf(v) for v in np.atleast_1d(y)])
+
+
+def mean_field_retrieval(alpha):
+    """T = 0, N -> infinity: overlap m of the retrieval state at memory load alpha, or None above alpha_c.
+
+    It is the largest root y of g(y) = 0 (the smaller one is the unstable state in between), m = erf(y)."""
+    y = np.linspace(1e-3, 8, 80001)
+    g = _g(y, alpha)
+    idx = np.nonzero(np.sign(g[:-1]) * np.sign(g[1:]) < 0)[0]
+    if len(idx) == 0:
+        return None
+    i = idx[-1]
+    lo, hi = y[i], y[i + 1]
+    for _ in range(60):
+        mid = 0.5 * (lo + hi)
+        if np.sign(_g(mid, alpha)[0]) == np.sign(_g(lo, alpha)[0]):
+            lo = mid
+        else:
+            hi = mid
+    return math.erf(0.5 * (lo + hi))
+
+
+def mean_field_capacity():
+    """alpha_c: the largest alpha for which the retrieval state exists, and its overlap there (about 0.138, 0.967)."""
+    lo, hi = 0.05, 0.3
+    for _ in range(50):
+        mid = 0.5 * (lo + hi)
+        if mean_field_retrieval(mid) is None:
+            hi = mid
+        else:
+            lo = mid
+    return lo, mean_field_retrieval(lo)
+
+
+def finite_size_scan(Ns, alphas, replicas, sweeps, threads, seed):
+    """run_capacity for every (N, alpha). Returns {N: {alpha: array of the overlaps of the replicas}}."""
+    pairs = [(N, a) for N in Ns for a in alphas]
+    seeds = np.random.SeedSequence(seed).spawn(len(pairs))
+    tasks = [(N, a, replicas, sweeps, ss) for (N, a), ss in zip(pairs, seeds)]
+    tasks.sort(key=lambda t: -t[0])  # the slow ones first
+    if threads > 1:
+        with Pool(threads) as pool:
+            res = list(tqdm(pool.imap_unordered(run_capacity, tasks), total=len(tasks)))
+    else:
+        res = [run_capacity(t) for t in tqdm(tasks)]
+    out = {N: {} for N in Ns}
+    for r in res:
+        out[r["N"]][r["alpha"]] = r["m"]
+    return out
+
+
+def retrieval_threshold(alphas, fraction, level=0.5):
+    """alpha at which the fraction of the replicas that retrieve falls through `level` (linear interpolation)."""
+    alphas = np.asarray(alphas, float)
+    for i in range(len(alphas) - 1):
+        f0, f1 = fraction[i], fraction[i + 1]
+        if f0 >= level > f1:
+            return float(alphas[i] + (alphas[i + 1] - alphas[i]) * (f0 - level) / (f0 - f1))
+    return float("nan")
+
+
+def alpha_c_of_N(data, Ns, alphas, threshold=0.5, boot=300, seed=0):
+    """alpha_c(N) from the data of finite_size_scan: the load at which half of the replicas still retrieve (their
+    final overlap is above `threshold`). The error is the spread of a bootstrap over the replicas."""
+    rng = np.random.default_rng(seed)
+    est, err = [], []
+    for N in Ns:
+        M = np.array([data[N][a] for a in alphas])            # (alphas, replicas)
+        est.append(retrieval_threshold(alphas, (M > threshold).mean(1)))
+        b = []
+        for _ in range(boot):
+            idx = rng.integers(0, M.shape[1], size=M.shape[1])
+            b.append(retrieval_threshold(alphas, (M[:, idx] > threshold).mean(1)))
+        b = np.array(b)[np.isfinite(b)]
+        err.append(float(np.std(b, ddof=1)) if len(b) > 1 else float('nan'))
+    return np.array(est), np.array(err)
 
 
 # ---------------------------------------------------------------------------------------------- figures
@@ -248,6 +341,110 @@ def plot_capacity(res, N, path):
     plt.close(fig)
 
 
+def fit_extrapolation(Ns, est, err, nu=None):
+    """Weighted least squares  alpha_c(N) = a_inf + b N^(-nu).
+
+    nu fixed, or free (nu=None: the exponent with the smallest chi^2 on a grid). Returns a dict with a_inf, its
+    statistical error at that exponent, b, nu, chi2, and for the free fit the range of nu with chi2 within 1 of the
+    minimum and the values of a_inf at its ends: the data do not know the exponent, and a_inf depends on it.
+    """
+    N, est, err = np.asarray(Ns, float), np.asarray(est, float), np.asarray(err, float)
+    ok = np.isfinite(est)
+    N, est = N[ok], est[ok]
+    w = 1.0 / np.maximum(err[ok], 1e-3)  # a floor, so that one lucky point with zero spread does not dominate
+
+    def one(v):
+        A = np.vstack([np.ones(len(N)), N ** -v]).T * w[:, None]
+        coef = np.linalg.lstsq(A, est * w, rcond=None)[0]
+        chi2 = float(np.sum((A @ coef - est * w) ** 2))
+        return coef, chi2, float(np.sqrt(np.linalg.inv(A.T @ A)[0, 0]))
+
+    out = {}
+    if nu is None:
+        grid = np.linspace(0.1, 2.0, 191)
+        chis = np.array([one(v)[1] for v in grid])
+        nu = float(grid[int(np.argmin(chis))])
+        inside = grid[chis < chis.min() + 1.0]
+        out["nu_range"] = (float(inside.min()), float(inside.max()))
+        out["a_inf_range"] = (float(one(inside.min())[0][0]), float(one(inside.max())[0][0]))
+    coef, chi2, da = one(nu)
+    out.update(a_inf=float(coef[0]), da_inf=da, b=float(coef[1]), nu=float(nu), chi2=chi2, dof=len(N) - 2)
+    return out
+
+
+def plot_finite_size(data, Ns, alphas, path, threshold=0.5, loads=(0.10, 0.12)):
+    """Three panels: the fraction of the replicas that retrieve against alpha for every N; alpha_c(N) against
+    1/sqrt(N), extrapolated to N -> infinity, against the mean field alpha_c; the overlap of the retrieval state at
+    fixed alpha against 1/sqrt(N), against the mean field overlap."""
+    plt, ps = _setup()
+    from matplotlib.colors import LinearSegmentedColormap
+
+    cmap = LinearSegmentedColormap.from_list("n", [ps.INK, ps.ACCENT])
+    a_mf, m_mf = mean_field_capacity()
+    est, err = alpha_c_of_N(data, Ns, alphas, threshold)
+    free = fit_extrapolation(Ns, est, err)           # exponent free
+    half = fit_extrapolation(Ns, est, err, nu=0.5)    # the usual 1/sqrt(N), for comparison
+
+    fig, axes = plt.subplots(1, 3, figsize=(16, 4.8))
+    ax1, ax2, ax3 = axes
+    for k, N in enumerate(Ns):
+        f = np.array([(data[N][a] > threshold).mean() for a in alphas])
+        ax1.plot(alphas, f, "-s", ms=5, lw=1.4, color=cmap(k / max(1, len(Ns) - 1)), label=f"N = {N}")
+    ax1.axvline(a_mf, color=ps.INK, ls=ps.DASHED, lw=1.4)
+    ax1.set_xlabel(r"MEMORY LOAD  $\alpha = P / N$")
+    ax1.set_ylabel(f"FRACTION OF REPLICAS WITH  m > {threshold}")
+    ax1.set_title("RETRIEVAL AGAINST LOAD")
+    ps.style_axes(ax1)
+    ps.legend(ax1, "lower left")
+
+    x = 1.0 / np.sqrt(np.array(Ns, float))
+    xx = np.linspace(0, x.max() * 1.05, 50)
+    Nf = np.array(Ns, float)
+    xx = np.linspace(0, x.max() * 1.05, 200)
+    curve = lambda f: f["a_inf"] + f["b"] * np.maximum(xx, 1e-9) ** (2 * f["nu"])  # N^-nu = (1/sqrt N)^(2 nu)
+    ax2.axhline(a_mf, color=ps.ACCENT, lw=2.4, label=rf"MEAN FIELD  $\alpha_c = {a_mf:.3f}$")
+    ax2.plot(xx, curve(half), color=ps.GREY, ls=ps.DOTTED, lw=1.6,
+             label=rf"FIT  $\nu = 1/2$ (FIXED):  {half['a_inf']:.3f}")
+    ax2.plot(xx, curve(free), color=ps.INK, ls=ps.DASHED, lw=1.6,
+             label=rf"FIT  $\nu = {free['nu']:.2f}$ (FREE):  {free['a_inf']:.3f}")
+    ax2.errorbar(x, est, yerr=err, fmt="s", ms=6, color=ps.INK, ecolor=ps.INK, elinewidth=1.2, capsize=3, zorder=4)
+    ax2.errorbar([0.0], [half["a_inf"]], yerr=[half["da_inf"]], fmt="D", ms=7, mfc=ps.PAPER, mec=ps.GREY, mew=2,
+                 ecolor=ps.GREY, elinewidth=2, capsize=4, zorder=5)
+    ax2.errorbar([0.0], [free["a_inf"]], yerr=[free["da_inf"]], fmt="s", ms=10, mfc=ps.PAPER, mec=ps.INK, mew=2,
+                 ecolor=ps.INK, elinewidth=2, capsize=5, zorder=6)
+    ax2.set_xlim(-0.004, x.max() * 1.05)
+    ax2.set_xlabel(r"$1/\sqrt{N}$")
+    ax2.set_ylabel(r"$\alpha_c(N)$  (HALF OF THE REPLICAS RETRIEVE)")
+    ax2.set_title(r"CAPACITY AGAINST SIZE:  $a + b N^{-\nu}$")
+    ps.style_axes(ax2)
+    ps.legend(ax2, "upper left")
+
+    for a, c in zip(loads, (ps.INK, ps.ACCENT)):
+        if not all(a in data[N] for N in Ns):
+            continue
+        mm, ee = [], []
+        for N in Ns:
+            r = data[N][a][data[N][a] > threshold]  # the replicas that retrieve
+            mm.append(r.mean() if len(r) else np.nan)
+            ee.append(sem(r[:, None], 0)[0] if len(r) > 1 else 0.0)
+        m_th = mean_field_retrieval(a)
+        ax3.axhline(m_th, color=c, ls=ps.DASHED, lw=1.4)
+        ax3.errorbar(x, mm, yerr=ee, fmt="s", ms=6, color=c, ecolor=c, elinewidth=1.2, capsize=3, zorder=4,
+                     label=rf"$\alpha = {a}$   (MEAN FIELD {m_th:.4f})")
+    ax3.set_xlim(0, x.max() * 1.05)
+    ax3.set_xlabel(r"$1/\sqrt{N}$")
+    ax3.set_ylabel(r"OVERLAP  $m$  OF THE RETRIEVAL STATE")
+    ax3.set_title("OVERLAP AGAINST SIZE")
+    ps.style_axes(ax3)
+    ps.legend(ax3, "lower left")
+    fig.suptitle("[ HOPFIELD ]  FINITE SIZE, T = 0, START ON THE PATTERN", x=0.02, ha="left", fontweight="bold",
+                 fontsize=10)
+    fig.tight_layout()
+    ps.savefig(fig, path)
+    plt.close(fig)
+    return est, err, free, half
+
+
 # ---------------------------------------------------------------------------------------------- command line
 def main():
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -264,13 +461,41 @@ def main():
                    help="start from pattern 0 (with --noise) or from a random state")
     p.add_argument("--noise", type=float, default=0.0, help="fraction of flipped bits of the starting pattern")
     p.add_argument("--capacity", action="store_true", help="scan alpha = P/N at T = 0 instead of T")
+    p.add_argument("--finite-size", action="store_true", help="capacity scan for several N, extrapolated to N -> inf")
+    p.add_argument("--from-json", default=None, help="finite size scan: read the data of a previous run, no simulation")
+    p.add_argument("--Ns", default="100,200,400,800,1600,3200", help="sizes of the finite size scan")
     p.add_argument("--plot", action="store_true")
     p.add_argument("--out", default="./figs/", help="folder of the figures")
     args = p.parse_args()
 
     t0 = time.time()
     rng = np.random.default_rng(args.seed)
-    if args.capacity:
+    if args.finite_size:
+        Ns = [int(v) for v in args.Ns.split(",")]
+        alphas = np.round(np.arange(0.08, 0.4001, 0.01), 3)
+        if args.from_json:
+            raw = json.load(open(args.from_json))
+            data = {int(N): {float(a): np.array(m) for a, m in d.items()} for N, d in raw.items()}
+            Ns = sorted(data)
+            alphas = np.array(sorted(data[Ns[0]]))
+        else:
+            data = finite_size_scan(Ns, alphas, args.replicas, args.iter, args.threads, args.seed)
+            json.dump({str(N): {str(a): list(map(float, m)) for a, m in d.items()} for N, d in data.items()},
+                      open(f"{args.out}finite_size.json", "w"))
+        est, err = alpha_c_of_N(data, Ns, alphas)
+        a_mf, m_mf = mean_field_capacity()
+        print(f"mean field: alpha_c = {a_mf:.4f}, m = {m_mf:.4f}")
+        for N, e, d in zip(Ns, est, err):
+            print(f"N = {N:5d}   alpha_c(N) = {e:.4f} +- {d:.4f}")
+        if args.plot:
+            _, _, free, half = plot_finite_size(data, Ns, alphas, f"{args.out}finite_size.png")
+            for name, f in (("nu = 1/2 fixed", half), ("nu free      ", free)):
+                print(f"fit {name}: alpha_c(inf) = {f['a_inf']:.4f} +- {f['da_inf']:.4f}  nu = {f['nu']:.2f}  "
+                      f"chi2 = {f['chi2']:.1f} ({f['dof']} dof)")
+            lo, hi = free["nu_range"]
+            print(f"the free fit: nu between {lo:.2f} and {hi:.2f} within one unit of chi2, "
+                  f"alpha_c(inf) between {free['a_inf_range'][0]:.4f} and {free['a_inf_range'][1]:.4f}")
+    elif args.capacity:
         alphas = np.array([0.02, 0.05, 0.08, 0.10, 0.12, 0.138, 0.15, 0.17, 0.20, 0.25, 0.30])
         res = capacity_scan(args.N, alphas, args.replicas, args.iter, args.threads, args.seed)
         for r in res:

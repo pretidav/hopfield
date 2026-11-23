@@ -111,3 +111,34 @@ def test_pool_runs_a_scan_with_threads():
     x = H.random_patterns(40, 2, rng)
     res = H.temperature_scan(x, [0.2, 0.4], 2, 3, "pattern", 0.0, 2, 15)
     assert [r["T"] for r in res] == [0.2, 0.4]
+
+
+def test_mean_field_capacity_is_the_known_value():
+    a, m = H.mean_field_capacity()
+    assert a == pytest.approx(0.138, abs=0.001) and m == pytest.approx(0.967, abs=0.002)
+    assert H.mean_field_retrieval(0.2) is None and H.mean_field_retrieval(0.05) > 0.999
+
+
+def test_relax_stops_at_a_fixed_point():
+    rng = np.random.default_rng(15)
+    x = H.random_patterns(200, 3, rng)
+    net = H.HopfieldNetwork(x, temp=0.0)
+    s, sweeps = net.relax(x[0], 50, rng)
+    assert sweeps == 1 and np.array_equal(s, x[0])
+
+
+def test_fit_extrapolation_recovers_a_known_law():
+    Ns = np.array([100, 200, 400, 800, 1600, 3200], float)
+    a, b, nu = 0.138, 5.0, 0.9
+    est = a + b * Ns ** -nu
+    err = np.full(6, 0.002)
+    free = H.fit_extrapolation(Ns, est, err)
+    assert free["a_inf"] == pytest.approx(a, abs=2e-3) and free["nu"] == pytest.approx(nu, abs=0.05)
+    fixed = H.fit_extrapolation(Ns, est, err, nu=0.9)
+    assert fixed["a_inf"] == pytest.approx(a, abs=1e-9) and fixed["chi2"] < 1e-12
+
+
+def test_threshold_interpolation():
+    al = [0.1, 0.2, 0.3]
+    assert H.retrieval_threshold(al, np.array([1.0, 0.6, 0.0])) == pytest.approx(0.2 + 0.1 * 0.1 / 0.6)
+    assert np.isnan(H.retrieval_threshold(al, np.array([1.0, 0.9, 0.8])))

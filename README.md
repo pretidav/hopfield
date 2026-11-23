@@ -20,8 +20,12 @@ A sweep updates the `N` units one at a time, in a new random order, each with th
 pip install -e ../plot_style                 # style of the figures (once)
 python hopfield.py --N=1000 --M=3 --replicas=10 --iter=30 --Tmin=0.05 --Tmax=1.5 --Tby=0.1 --plot --threads=4
 python hopfield.py --capacity --N=500 --replicas=20 --iter=20 --plot --threads=4
+python hopfield.py --finite-size --Ns=100,200,400,800,1600,3200 --replicas=40 --iter=100 --plot --threads=4   # 3 min
+python hopfield.py --finite-size --from-json=figs/finite_size.json --plot                                      # refit, no simulation
 python -m pytest test_hopfield.py
 ```
+
+Run it from a file or the shell, not from `python -` or a notebook cell: `Pool` needs to import the main module.
 
 `--start=pattern` (default) starts from pattern 0 with a fraction `--noise` of the bits flipped, and `m` is the overlap with it; `--start=random` starts from a random state and `m` is the largest `|m^mu|` reached. Everything is reproducible with `--seed`. The figures go to `figs/`.
 
